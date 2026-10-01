@@ -246,6 +246,7 @@ class OnlineDerenderer:
                     message=message,
                     logprobs=resolved_logprobs,
                     finish_reason=choice.finish_reason,
+                    stop_reason=choice.stop_reason,
                 )
             )
 
@@ -445,6 +446,7 @@ class OnlineDerenderer:
                     delta=delta,
                     logprobs=resolved_logprobs,
                     finish_reason=choice.finish_reason,
+                    stop_reason=choice.stop_reason,
                 )
             )
 
@@ -645,6 +647,7 @@ class OnlineDerenderer:
                 index=choice.index,
                 delta=delta_message,
                 finish_reason=finish_reason,
+                stop_reason=choice.stop_reason,
             )
             stream_choices.append(
                 maybe_filter_parallel_tool_calls(stream_choice, chat_request)
@@ -749,6 +752,7 @@ class OnlineDerenderer:
                         index=index,
                         text=decoded_text,
                         finish_reason=choice.finish_reason,
+                        stop_reason=choice.stop_reason,
                         logprobs=completion_logprobs,
                     )
                 )
@@ -850,6 +854,7 @@ class OnlineDerenderer:
                     text=new_text,
                     logprobs=completion_logprobs,
                     finish_reason=choice.finish_reason,
+                    stop_reason=choice.stop_reason,
                 )
             )
 
