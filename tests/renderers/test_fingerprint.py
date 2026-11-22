@@ -13,6 +13,7 @@ from vllm.renderers.fingerprint import (
     build_manifest,
     canonical_json,
     collect_files,
+    fingerprints_match,
     render_fingerprint,
     renderer_tag,
 )
@@ -124,3 +125,23 @@ def test_render_fingerprint_is_pinned_for_a_known_manifest():
 def test_renderer_tag_rejects_a_colon_so_the_string_splits_in_three():
     with pytest.raises(ValueError):
         renderer_tag(version="1.0", renderer="hf", tokenizer="tok:1")
+
+
+_PY = "rf1:aa:vllm-py/1.0;renderer=hf;tokenizer=tokenizers/0.22.0"
+_RS = "rf1:aa:vllm-rs/0.1.0;renderer=hf;tokenizer=fastokens/0.3.5"
+
+
+@pytest.mark.parametrize(
+    ("received", "mode", "expected"),
+    [
+        (_PY, "full", True),
+        (_RS, "full", False),
+        (_RS, "inputs", True),
+        (_RS.replace("renderer=hf", "renderer=mistral"), "inputs", False),
+        (_RS.replace(":aa:", ":bb:"), "inputs", False),
+        (_RS.replace("rf1:", "rf2:"), "inputs", False),
+        ("not-a-fingerprint", "inputs", False),
+    ],
+)
+def test_fingerprints_match_ignores_only_what_the_mode_allows(received, mode, expected):
+    assert fingerprints_match(received, _PY, mode) is expected

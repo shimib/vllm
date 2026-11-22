@@ -222,6 +222,19 @@ class BaseFrontendArgs:
     Has no effect on `vllm launch render` or `vllm serve --tokens-only` which
     always register their required endpoints regardless of this flag.
     """
+    fingerprint_compare: Literal["full", "inputs"] = "full"
+    """How a caller's `X-Render-Fingerprint` is compared with this server's
+    on routes that accept prompt token IDs. `full` compares the whole string.
+    `inputs` compares the manifest digest and the renderer name only, ignoring
+    the implementation, its version and the tokenizer library."""
+    on_fingerprint_mismatch: Literal["reject", "rerender", "warn"] = "reject"
+    """What to do when the caller's render fingerprint does not match.
+    `reject` returns 409. `rerender` re-renders from `messages` where the
+    request has them and rejects otherwise. `warn` accepts the request and
+    counts the mismatch."""
+    require_render_fingerprint: bool = False
+    """If set, reject requests that carry prompt token IDs without an
+    `X-Render-Fingerprint` header. By default such requests are not checked."""
     fingerprint_mode: Literal["full", "hash", "custom", "none"] = "full"
     """Controls the `system_fingerprint` field on responses.
 
