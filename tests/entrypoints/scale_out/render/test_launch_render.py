@@ -258,3 +258,6 @@ async def test_render_fingerprint_matches_its_manifest(client):
     assert data["manifest"]["files"]["tokenizer.json"] is not None
     assert data["manifest"]["flags"]["max_model_len"] is None
     assert data["manifest"]["flags"]["video_pruning_method"] is None
+    # Server-side defaults the operator did not pass must stay out, or a
+    # frontend without that flag could never produce the same manifest.
+    assert data["manifest"]["flags"]["default_chat_template_kwargs"] is None

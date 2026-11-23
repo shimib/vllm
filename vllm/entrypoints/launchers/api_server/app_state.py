@@ -161,7 +161,6 @@ async def init_app_state(
                 args,
                 engine_client.renderer,
                 chat_template=resolved_chat_template,
-                default_chat_template_kwargs=default_chat_template_kwargs,
             )
 
     if "transcription" in supported_tasks or "realtime" in supported_tasks:

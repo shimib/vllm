@@ -104,7 +104,6 @@ async def init_render_app_state(
         args,
         renderer,
         chat_template=resolved_chat_template,
-        default_chat_template_kwargs=default_chat_template_kwargs,
     )
 
     state.openai_serving_models = model_registry

@@ -120,12 +120,16 @@ def _flags(
     args: Namespace,
     renderer: BaseRenderer,
     chat_template: str | None,
-    default_chat_template_kwargs: dict[str, Any] | None,
 ) -> dict[str, Any]:
     mm_config = model_config.multimodal_config
     language_model_only = bool(mm_config and mm_config.language_model_only)
     multimodal_active = mm_config is not None and not language_model_only
     pruning_rate = (mm_config.video_pruning_rate if mm_config else None) or None
+    # `--cohere-format` defaults to a value on every server, but only the
+    # Cohere renderer reads it.
+    template_kwargs = dict(args.default_chat_template_kwargs or {})
+    if _renderer_name(model_config, renderer) == "cohere":
+        template_kwargs.setdefault("cohere_format", args.cohere_format)
 
     return {
         "tokenizer_mode": args.tokenizer_mode,
@@ -138,7 +142,7 @@ def _flags(
             else None
         ),
         "chat_template_content_format": args.chat_template_content_format,
-        "default_chat_template_kwargs": default_chat_template_kwargs or None,
+        "default_chat_template_kwargs": template_kwargs or None,
         "reasoning_parser": args.reasoning_parser or None,
         "reasoning_effort_map": args.reasoning_effort_map or None,
         "exclude_tools_when_tool_choice_none": args.exclude_tools_when_tool_choice_none,
@@ -162,7 +166,6 @@ def compute_render_fingerprint(
     renderer: BaseRenderer,
     *,
     chat_template: str | None,
-    default_chat_template_kwargs: dict[str, Any] | None,
 ) -> RenderFingerprint:
     """Build the manifest from the resolved sources and the render flags.
 
@@ -171,7 +174,6 @@ def compute_render_fingerprint(
         args: Parsed CLI arguments; flags are recorded as configured.
         renderer: The renderer that produces prompts.
         chat_template: Text of `--chat-template`, if given.
-        default_chat_template_kwargs: Resolved `--default-chat-template-kwargs`.
 
     """
     tokenizer_dir, tokenizer_presence = _resolve_snapshot(
@@ -187,9 +189,7 @@ def compute_render_fingerprint(
 
     manifest = build_manifest(
         collect_files(tokenizer_dir, model_dir),
-        _flags(
-            model_config, args, renderer, chat_template, default_chat_template_kwargs
-        ),
+        _flags(model_config, args, renderer, chat_template),
     )
     tag = renderer_tag(
         version=VLLM_VERSION,
