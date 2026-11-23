@@ -21,7 +21,8 @@ from vllm.logger import init_logger
 from vllm.renderers import BaseRenderer
 from vllm.renderers.chat_utils import load_chat_template
 from vllm.renderers.fingerprint import (
-    MODEL_FILES,
+    CONFIG_FILES,
+    PROCESSOR_FILES,
     TOKENIZER_FILES,
     build_manifest,
     collect_files,
@@ -181,14 +182,17 @@ def compute_render_fingerprint(
         model_config.tokenizer_revision,
         [*_TOKENIZER_PATTERNS, "additional_chat_templates/*.jinja"],
     )
-    model_dir, model_presence = _resolve_snapshot(
+    config_dir, config_presence = _resolve_snapshot(
         model_config.hf_config_path or model_config.model,
         model_config.revision,
-        list(MODEL_FILES),
+        list(CONFIG_FILES),
+    )
+    model_dir, model_presence = _resolve_snapshot(
+        model_config.model, model_config.revision, list(PROCESSOR_FILES)
     )
 
     manifest = build_manifest(
-        collect_files(tokenizer_dir, model_dir),
+        collect_files(tokenizer_dir, config_dir, model_dir),
         _flags(model_config, args, renderer, chat_template),
     )
     tag = renderer_tag(
@@ -196,7 +200,7 @@ def compute_render_fingerprint(
         renderer=_renderer_name(model_config, renderer),
         tokenizer=_tokenizer_library(renderer),
     )
-    hub = "hub" in (tokenizer_presence, model_presence)
+    hub = "hub" in (tokenizer_presence, config_presence, model_presence)
     return RenderFingerprint(
         render_fingerprint=render_fingerprint(manifest, tag),
         presence="hub" if hub else "local",

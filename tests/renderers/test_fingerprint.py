@@ -8,7 +8,8 @@ import hashlib
 import pytest
 
 from vllm.renderers.fingerprint import (
-    MODEL_FILES,
+    CONFIG_FILES,
+    PROCESSOR_FILES,
     TOKENIZER_FILES,
     build_manifest,
     canonical_json,
@@ -65,9 +66,9 @@ def test_collect_files_lists_every_fixed_key_and_tells_absent_from_empty(tmp_pat
     (tmp_path / "tokenizer.json").write_bytes(b"{}")
     (tmp_path / "merges.txt").write_bytes(b"")
 
-    files = collect_files(tmp_path, tmp_path)
+    files = collect_files(tmp_path, tmp_path, tmp_path)
 
-    assert set(files) == set(TOKENIZER_FILES + MODEL_FILES)
+    assert set(files) == set(TOKENIZER_FILES + CONFIG_FILES + PROCESSOR_FILES)
     assert files["tokenizer.json"] == hashlib.sha256(b"{}").hexdigest()
     assert files["merges.txt"] == hashlib.sha256(b"").hexdigest()
     assert files["vocab.json"] is None
@@ -80,7 +81,9 @@ def test_collect_files_adds_glob_matches_as_extra_keys(tmp_path):
     (tmp_path / "additional_chat_templates" / "rag.jinja").write_bytes(b"x")
     (tmp_path / "README.md").write_bytes(b"x")
 
-    extra = set(collect_files(tmp_path, tmp_path)) - set(TOKENIZER_FILES + MODEL_FILES)
+    extra = set(collect_files(tmp_path, tmp_path, tmp_path)) - set(
+        TOKENIZER_FILES + CONFIG_FILES + PROCESSOR_FILES
+    )
 
     assert extra == {
         "tokenizer.model.v3",
@@ -90,16 +93,20 @@ def test_collect_files_adds_glob_matches_as_extra_keys(tmp_path):
     }
 
 
-def test_config_files_resolve_against_the_model_source(tmp_path):
-    tokenizer_dir, model_dir = tmp_path / "tok", tmp_path / "model"
-    tokenizer_dir.mkdir()
-    model_dir.mkdir()
-    (tokenizer_dir / "config.json").write_bytes(b"tokenizer side")
-    (model_dir / "config.json").write_bytes(b"model side")
+def test_each_file_group_resolves_against_its_own_source(tmp_path):
+    """`--tokenizer` and `--hf-config-path` can point away from the model; the
+    processor configs are always loaded from the model itself."""
+    dirs = {name: tmp_path / name for name in ("tokenizer", "config", "model")}
+    for name, path in dirs.items():
+        path.mkdir()
+        for file in ("tokenizer.json", "config.json", "preprocessor_config.json"):
+            (path / file).write_text(name)
 
-    files = collect_files(tokenizer_dir, model_dir)
+    files = collect_files(dirs["tokenizer"], dirs["config"], dirs["model"])
 
-    assert files["config.json"] == hashlib.sha256(b"model side").hexdigest()
+    assert files["tokenizer.json"] == hashlib.sha256(b"tokenizer").hexdigest()
+    assert files["config.json"] == hashlib.sha256(b"config").hexdigest()
+    assert files["preprocessor_config.json"] == hashlib.sha256(b"model").hexdigest()
 
 
 def test_render_fingerprint_is_pinned_for_a_known_manifest():

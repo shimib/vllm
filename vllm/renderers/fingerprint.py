@@ -37,9 +37,8 @@ TOKENIZER_FILES = (
     "chat_template.jinja",
     "chat_template.json",
 )
-MODEL_FILES = (
-    "config.json",
-    "params.json",
+CONFIG_FILES = ("config.json", "params.json")
+PROCESSOR_FILES = (
     "preprocessor_config.json",
     "video_preprocessor_config.json",
     "processor_config.json",
@@ -51,7 +50,7 @@ _TOKENIZER_GLOBS = (
     re.compile(r"[^/]+\.jinja"),
 )
 _ADDITIONAL_TEMPLATES_DIR = "additional_chat_templates"
-_FIXED = frozenset(TOKENIZER_FILES + MODEL_FILES)
+_FIXED = frozenset(TOKENIZER_FILES + CONFIG_FILES + PROCESSOR_FILES)
 
 _MAX_SAFE_INTEGER = 2**53 - 1
 
@@ -123,19 +122,24 @@ def _hash_file(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def collect_files(tokenizer_dir: Path, model_dir: Path) -> dict[str, str | None]:
+def collect_files(
+    tokenizer_dir: Path, config_dir: Path, model_dir: Path
+) -> dict[str, str | None]:
     """Hash the fixed file list and the glob matches of layout `rf1`.
 
     Args:
         tokenizer_dir: Resolved snapshot of the tokenizer source.
-        model_dir: Resolved snapshot of the model (config) source.
+        config_dir: Resolved snapshot of the model config source.
+        model_dir: Resolved snapshot of the model, which holds the processor
+            configs.
 
     Returns:
         File name to lowercase hex SHA-256 of its bytes, or None when absent.
 
     """
     files = {name: _hash_file(tokenizer_dir / name) for name in TOKENIZER_FILES}
-    files.update({name: _hash_file(model_dir / name) for name in MODEL_FILES})
+    files.update({name: _hash_file(config_dir / name) for name in CONFIG_FILES})
+    files.update({name: _hash_file(model_dir / name) for name in PROCESSOR_FILES})
 
     if tokenizer_dir.is_dir():
         for path in tokenizer_dir.iterdir():
