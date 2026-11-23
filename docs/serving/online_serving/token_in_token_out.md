@@ -51,6 +51,33 @@ Send the header `X-data-parallel-rank: <int>` to pin a request to one data-paral
 
 Send the header `X-Vllm-Priority: <int>` to set the request's priority. It overrides the body `priority`; a non-integer value is ignored. A header value or body `priority` outside `[-2**31, 2**31 - 1]` is rejected. Non-zero priorities require the server to use priority scheduling (`--scheduling-policy priority`).
 
+## Checking the renderer (`X-Render-Fingerprint`)
+
+The token IDs in a request come from a separate render server. If that server
+is configured differently from the worker (tokenizer files, chat template,
+reasoning parser), the worker runs a prompt it would not have produced, with no
+error. To catch this, send the render server's
+[render fingerprint](renderer.md#render-fingerprint) in the
+`X-Render-Fingerprint` request header. The worker compares it with its own
+before generation starts, and returns its own value in the same response
+header.
+
+| Flag | Default | Effect |
+| ---- | ------- | ------ |
+| `--fingerprint-compare` | `full` | `full` compares the whole string, so only the same renderer build matches. `inputs` compares the manifest digest and the renderer name, which lets a `vllm-rs` renderer match a Python worker. |
+| `--on-fingerprint-mismatch` | `reject` | `reject` returns `409` with the `received` and `expected` strings. `warn` accepts the request, logs the pair once and counts it. |
+| `--require-render-fingerprint` | off | Returns `400` for a request without the header. By default such a request is not checked. |
+
+With the defaults, a rolling upgrade of either side is a mismatch, because
+the fingerprint carries the vLLM version. Use `--on-fingerprint-mismatch=warn`
+for the rollout window, or route by fingerprint. The
+`vllm:render_fingerprint_checks_total` counter reports `match`, `mismatch` and
+`absent` requests.
+
+The worker also exports its own fingerprint as the `render_fingerprint` label
+of the `vllm:render_fingerprint_info` gauge, so a router can skip workers that
+do not match its renderer without calling them.
+
 ## Output modes
 
 The request field `output_mode` selects how much of the postprocessing the server does for the caller.

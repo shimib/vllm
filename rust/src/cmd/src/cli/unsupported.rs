@@ -343,6 +343,25 @@ pub struct ServerUnsupportedArgs {
     )]
     pub trust_request_mm_kwargs: Option<Unsupported>,
 
+    /// How the `X-Render-Fingerprint` header of a `/inference/v1/generate`
+    /// request is compared with the server's render fingerprint.
+    #[arg(long)]
+    pub fingerprint_compare: Option<Unsupported>,
+
+    /// What to do when the caller's render fingerprint does not match.
+    #[arg(long)]
+    pub on_fingerprint_mismatch: Option<Unsupported>,
+
+    /// Reject `/inference/v1/generate` requests without an
+    /// `X-Render-Fingerprint` header.
+    #[arg(
+        long,
+        visible_alias = "no-require-render-fingerprint",
+        default_missing_value = "true",
+        num_args = 0..=1
+    )]
+    pub require_render_fingerprint: Option<Unsupported>,
+
     /// The role name to return if `request.add_generation_prompt=true`.
     #[arg(long)]
     pub response_role: Option<Unsupported>,

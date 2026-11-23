@@ -4,14 +4,20 @@
 
 from argparse import Namespace
 from dataclasses import dataclass
+from functools import lru_cache
+from http import HTTPStatus
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Any, Literal
 
 import huggingface_hub
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from prometheus_client import Counter, Gauge
 
 import vllm.envs as envs
 from vllm.config import ModelConfig
+from vllm.entrypoints.serve.engine.protocol import ErrorInfo
 from vllm.logger import init_logger
 from vllm.renderers import BaseRenderer
 from vllm.renderers.chat_utils import load_chat_template
@@ -21,6 +27,7 @@ from vllm.renderers.fingerprint import (
     TOKENIZER_FILES,
     build_manifest,
     collect_files,
+    fingerprints_match,
     render_fingerprint,
     renderer_tag,
 )
@@ -34,6 +41,8 @@ from vllm.version import __version__ as VLLM_VERSION
 logger = init_logger(__name__)
 
 Presence = Literal["hub", "local"]
+
+RENDER_FINGERPRINT_HEADER = "X-Render-Fingerprint"
 
 _TOKENIZER_PATTERNS = [
     *TOKENIZER_FILES,
@@ -224,3 +233,95 @@ def compute_render_fingerprint(
         presence="hub" if hub else "local",
         manifest=manifest,
     )
+
+
+@lru_cache(maxsize=1)
+def _info_gauge() -> Gauge:
+    return Gauge(
+        name="vllm:render_fingerprint_info",
+        documentation=(
+            "Render fingerprint of this server, as a label. Routers read it "
+            "to send token IDs only to workers that match their renderer."
+        ),
+        labelnames=["render_fingerprint"],
+        multiprocess_mode="mostrecent",
+    )
+
+
+def export_render_fingerprint_info(fingerprint: RenderFingerprint | None) -> None:
+    if fingerprint is not None:
+        _info_gauge().labels(fingerprint.render_fingerprint).set(1)
+
+
+@lru_cache(maxsize=1)
+def _checks_counter() -> Counter:
+    return Counter(
+        name="vllm:render_fingerprint_checks",
+        documentation=(
+            "Requests carrying prompt token IDs, by the outcome of the "
+            "render fingerprint check."
+        ),
+        labelnames=["result"],
+    )
+
+
+def _error(status: HTTPStatus, err_type: str, message: str, **extra: str):
+    error = ErrorInfo(message=message, type=err_type, code=status.value)
+    content = {"error": {**error.model_dump(), **extra}}
+    return JSONResponse(content=content, status_code=status.value)
+
+
+def check_render_fingerprint(raw_request: Request) -> JSONResponse | None:
+    """Compare the caller's `X-Render-Fingerprint` with this server's.
+
+    Returns:
+        An error response when the request must be rejected, else None.
+
+    """
+    state = raw_request.app.state
+    own: RenderFingerprint | None = getattr(state, "render_fingerprint", None)
+    if own is None:
+        return None
+
+    args = state.args
+    expected = own.render_fingerprint
+    received = raw_request.headers.get(RENDER_FINGERPRINT_HEADER)
+    if received is None:
+        _checks_counter().labels("absent").inc()
+        if not args.require_render_fingerprint:
+            return None
+        return _error(
+            HTTPStatus.BAD_REQUEST,
+            "RenderFingerprintRequired",
+            f"This server requires the {RENDER_FINGERPRINT_HEADER} header on "
+            "requests that carry prompt token IDs.",
+            expected=expected,
+        )
+
+    if fingerprints_match(received, expected, args.fingerprint_compare):
+        _checks_counter().labels("match").inc()
+        return None
+
+    _checks_counter().labels("mismatch").inc()
+    if args.on_fingerprint_mismatch == "warn":
+        logger.warning_once(
+            "Render fingerprint mismatch accepted (--on-fingerprint-mismatch=warn): "
+            "received %s, expected %s",
+            received,
+            expected,
+        )
+        return None
+    return _error(
+        HTTPStatus.CONFLICT,
+        "RenderFingerprintMismatch",
+        "The caller's render fingerprint does not match this server's. Compare "
+        "GET /inference/v1/render_fingerprint on both sides to see which input "
+        "differs.",
+        received=received,
+        expected=expected,
+    )
+
+
+def render_fingerprint_headers(raw_request: Request) -> dict[str, str]:
+    own = getattr(raw_request.app.state, "render_fingerprint", None)
+    return {RENDER_FINGERPRINT_HEADER: own.render_fingerprint} if own else {}

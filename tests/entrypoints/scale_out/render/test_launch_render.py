@@ -275,3 +275,13 @@ def test_render_fingerprint_keeps_a_long_inline_chat_template():
         response = httpx.get(srv.url_for("inference/v1/render_fingerprint"))
 
     assert response.json()["manifest"]["flags"]["chat_template"] == template
+
+
+@pytest.mark.asyncio
+async def test_render_fingerprint_is_exported_as_a_metric_label(client):
+    """Routers screen endpoints by this label without calling the server."""
+    own = (await client.get("/inference/v1/render_fingerprint")).json()
+    metrics = (await client.get("/metrics")).text
+
+    label = f'render_fingerprint="{own["render_fingerprint"]}"'
+    assert f"vllm:render_fingerprint_info{{{label}}} 1.0" in metrics

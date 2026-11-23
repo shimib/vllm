@@ -13,11 +13,13 @@ import math
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import regex as re
 
 LAYOUT_VERSION = 1
+
+CompareMode = Literal["full", "inputs"]
 
 TOKENIZER_FILES = (
     "tokenizer.json",
@@ -171,3 +173,32 @@ def renderer_tag(*, version: str, renderer: str, tokenizer: str) -> str:
 def render_fingerprint(manifest: Mapping[str, Any], tag: str) -> str:
     digest = hashlib.sha256(canonical_json(manifest)).hexdigest()
     return f"rf{LAYOUT_VERSION}:{digest}:{tag}"
+
+
+def _split(fingerprint: str) -> tuple[str, str, str | None] | None:
+    parts = fingerprint.split(":")
+    if len(parts) != 3:
+        return None
+    layout, digest, tag = parts
+    renderer = next(
+        (kv[len("renderer=") :] for kv in tag.split(";") if kv.startswith("renderer=")),
+        None,
+    )
+    return layout, digest, renderer
+
+
+def fingerprints_match(received: str, expected: str, mode: CompareMode) -> bool:
+    """Compare a caller's fingerprint with this server's.
+
+    Args:
+        received: The caller's fingerprint.
+        expected: This server's fingerprint.
+        mode: `full` compares the whole string. `inputs` compares the layout,
+            the manifest digest and the `renderer=` key, ignoring the
+            implementation, its version and the tokenizer library.
+
+    """
+    if mode == "full":
+        return received == expected
+    received_parts = _split(received)
+    return received_parts is not None and received_parts == _split(expected)

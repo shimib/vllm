@@ -108,7 +108,37 @@ async def test_worker_serves_its_render_fingerprint(client):
     response = await client.get("/inference/v1/render_fingerprint")
 
     assert response.status_code == 200
-    assert response.json()["render_fingerprint"].startswith("rf1:")
+    own = response.json()["render_fingerprint"]
+    assert own.startswith("rf1:")
+    metrics = (await client.get("/metrics")).text
+    assert f'vllm:render_fingerprint_info{{render_fingerprint="{own}"}} 1.0' in metrics
+
+
+@pytest.mark.asyncio
+async def test_generate_checks_the_callers_render_fingerprint(client):
+    """Token IDs from a renderer with other inputs are rejected before
+    generation; a matching caller gets the worker's fingerprint back."""
+    own = (await client.get("/inference/v1/render_fingerprint")).json()[
+        "render_fingerprint"
+    ]
+    payload = {
+        "model": MODEL_NAME,
+        "token_ids": [1, 2, 3],
+        "sampling_params": {"max_tokens": 5},
+        "stream": False,
+    }
+    header = "X-Render-Fingerprint"
+
+    accepted = await client.post(GEN_ENDPOINT, json=payload, headers={header: own})
+    other_inputs = own.replace("rf1:", "rf1:00", 1)
+    rejected = await client.post(
+        GEN_ENDPOINT, json=payload, headers={header: other_inputs}
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.headers[header] == own
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["expected"] == own
 
 
 @pytest.mark.asyncio

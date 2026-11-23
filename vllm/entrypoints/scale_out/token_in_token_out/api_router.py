@@ -22,6 +22,7 @@ from vllm.entrypoints.serve.utils.api_utils import (
 from vllm.logger import init_logger
 
 from ...serve.engine.protocol import ErrorResponse
+from ..render.fingerprint import check_render_fingerprint, render_fingerprint_headers
 from .protocol import (
     AbortRequestsRequest,
     GenerateRequest,
@@ -72,6 +73,9 @@ async def generate(request: GenerateRequest, raw_request: Request):
     if handler is None:
         raise NotImplementedError("The model does not support generate tokens API")
 
+    if (rejection := check_render_fingerprint(raw_request)) is not None:
+        return rejection
+
     generator = await handler.serve_tokens(request, raw_request)
 
     if isinstance(generator, ErrorResponse):
@@ -79,17 +83,23 @@ async def generate(request: GenerateRequest, raw_request: Request):
             content=generator.model_dump(), status_code=generator.error.code
         )
 
-    elif isinstance(generator, RenderedGenerateResponse):
+    headers = render_fingerprint_headers(raw_request)
+    if isinstance(generator, RenderedGenerateResponse):
         return StreamingResponse(
             _send_parts(generator.parts),
             media_type="application/json",
-            headers={"content-length": str(sum(map(len, generator.parts)))},
+            headers={
+                "content-length": str(sum(map(len, generator.parts))),
+                **headers,
+            },
         )
 
     elif isinstance(generator, GenerateResponseBase):
-        return JSONResponse(content=generator.model_dump())
+        return JSONResponse(content=generator.model_dump(), headers=headers)
 
-    return StreamingResponse(content=generator, media_type="text/event-stream")
+    return StreamingResponse(
+        content=generator, media_type="text/event-stream", headers=headers
+    )
 
 
 abort_router = APIRouter()
