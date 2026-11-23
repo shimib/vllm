@@ -142,6 +142,24 @@ async def test_generate_checks_the_callers_render_fingerprint(client):
 
 
 @pytest.mark.asyncio
+async def test_completions_checks_the_fingerprint_only_for_token_prompts(client):
+    """A token-array prompt was rendered elsewhere, so it is checked like
+    `/inference/v1/generate`. A text prompt is rendered here and is not."""
+    headers = {"X-Render-Fingerprint": "rf1:00:other;renderer=hf;tokenizer=x/1"}
+    body = {"model": MODEL_NAME, "max_tokens": 2}
+
+    tokens = await client.post(
+        "/v1/completions", json={**body, "prompt": [1, 2, 3]}, headers=headers
+    )
+    text = await client.post(
+        "/v1/completions", json={**body, "prompt": "Hello"}, headers=headers
+    )
+
+    assert tokens.status_code == 409
+    assert text.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_generate_endpoint(client):
     payload = {
         "model": MODEL_NAME,

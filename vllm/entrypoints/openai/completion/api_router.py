@@ -13,6 +13,10 @@ from vllm.entrypoints.openai.completion.protocol import (
     CompletionStreamResponse,
 )
 from vllm.entrypoints.openai.completion.serving import OpenAIServingCompletion
+from vllm.entrypoints.scale_out.render.fingerprint import (
+    check_render_fingerprint,
+    render_fingerprint_headers,
+)
 from vllm.entrypoints.serve.engine.protocol import ErrorResponse
 from vllm.entrypoints.serve.utils.api_utils import (
     json_or_sse_responses,
@@ -57,6 +61,17 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if handler is None:
         raise NotImplementedError("The model does not support Completions API")
 
+    # A prompt given as token IDs was rendered elsewhere.
+    prompt = request.prompt
+    is_token_prompt = (
+        isinstance(prompt, list) and bool(prompt) and not isinstance(prompt[0], str)
+    )
+    fingerprint_headers: dict[str, str] = {}
+    if is_token_prompt:
+        if (rejection := check_render_fingerprint(raw_request)) is not None:
+            return rejection
+        fingerprint_headers = render_fingerprint_headers(raw_request)
+
     generator = await handler.create_completion(request, raw_request)
 
     if isinstance(generator, ErrorResponse):
@@ -66,7 +81,10 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     elif isinstance(generator, CompletionResponse):
         return JSONResponse(
             content=generator.model_dump(),
-            headers=metrics_header(metrics_header_format),
+            headers={
+                **(metrics_header(metrics_header_format) or {}),
+                **fingerprint_headers,
+            },
         )
 
     args = getattr(raw_request.app.state, "args", None)
@@ -74,6 +92,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     return StreamingResponse(
         content=with_sse_keep_alive(generator, float(keep_alive_interval)),
         media_type="text/event-stream",
+        headers=fingerprint_headers,
     )
 
 

@@ -62,6 +62,9 @@ error. To catch this, send the render server's
 before generation starts, and returns its own value in the same response
 header.
 
+`/v1/completions` applies the same check when `prompt` is an array of token
+IDs. A text prompt is rendered by the worker itself and is not checked.
+
 | Flag | Default | Effect |
 | ---- | ------- | ------ |
 | `--fingerprint-compare` | `full` | `full` compares the whole string, so only the same renderer build matches. `inputs` compares the manifest digest and the renderer name, which lets a `vllm-rs` renderer match a Python worker. |
