@@ -116,6 +116,14 @@ def _builtin_chat_template(
     return text if resolved == text else None
 
 
+def _configured_chat_template(args: Namespace, loaded: str | None) -> str | None:
+    """Text of `--chat-template` as given, without newline translation."""
+    path = Path(args.chat_template) if args.chat_template else None
+    if path is not None and path.is_file():
+        return path.read_bytes().decode("utf-8")
+    return loaded
+
+
 def _flags(
     model_config: ModelConfig,
     args: Namespace,
@@ -136,7 +144,7 @@ def _flags(
         "tokenizer_mode": args.tokenizer_mode,
         "config_format": args.config_format,
         "trust_remote_code": args.trust_remote_code,
-        "chat_template": chat_template,
+        "chat_template": _configured_chat_template(args, chat_template),
         "chat_template_fallback": (
             _builtin_chat_template(model_config, renderer)
             if chat_template is None
