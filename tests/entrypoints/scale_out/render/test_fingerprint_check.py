@@ -10,14 +10,16 @@ import pytest
 from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
+from vllm.entrypoints.scale_out.render import fingerprint
 from vllm.entrypoints.scale_out.render.fingerprint import (
     RENDER_FINGERPRINT_HEADER,
     RenderFingerprint,
     check_render_fingerprint,
 )
 
-OWN = "rf1:aa:vllm-py/1.0;renderer=hf;tokenizer=tokenizers/0.22.0"
-OTHER_BUILD = "rf1:aa:vllm-rs/0.1.0;renderer=hf;tokenizer=fastokens/0.3.5"
+DIGEST = "a" * 64
+OWN = f"rf1:{DIGEST}:vllm-py/1.0;renderer=hf;tokenizer=tokenizers/0.22.0"
+OTHER_BUILD = f"rf1:{DIGEST}:vllm-rs/0.1.0;renderer=hf;tokenizer=fastokens/0.3.5"
 
 
 def _status(headers: dict[str, str], **flags) -> tuple[int, dict]:
@@ -57,6 +59,40 @@ def test_match_passes():
 )
 def test_other_build_is_accepted_only_when_configured(flags):
     assert _status({RENDER_FINGERPRINT_HEADER: OTHER_BUILD}, **flags)[0] == 200
+
+
+@pytest.mark.parametrize(
+    "received",
+    [
+        "not-a-fingerprint",
+        f"rf1:{DIGEST[:-1]}:vllm-py/1.0",
+        f"rf1:{DIGEST}:tag with space",
+        f"rf1:{DIGEST}:{'x' * 300}",
+    ],
+)
+def test_malformed_fingerprint_is_rejected_and_not_echoed(received):
+    """The header is client input, so `warn` does not let it through."""
+    status, body = _status(
+        {RENDER_FINGERPRINT_HEADER: received}, on_fingerprint_mismatch="warn"
+    )
+
+    assert status == 400
+    assert "received" not in body["error"]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{"fingerprint_compare": "inputs"}, {"on_fingerprint_mismatch": "warn"}],
+)
+def test_accepted_pairs_log_at_a_bounded_rate(flags, caplog_vllm, monkeypatch):
+    """A caller that sends a new value per request cannot fill the log."""
+    monkeypatch.setattr(fingerprint, "_last_logged", {})
+    for build in ("0.1.0", "0.1.1", "0.1.2"):
+        received = OTHER_BUILD.replace("0.1.0", build)
+        assert _status({RENDER_FINGERPRINT_HEADER: received}, **flags)[0] == 200
+
+    logged = [r for r in caplog_vllm.records if "accepted: received" in r.message]
+    assert len(logged) == 1
 
 
 @pytest.mark.parametrize(("required", "expected"), [(False, 200), (True, 400)])

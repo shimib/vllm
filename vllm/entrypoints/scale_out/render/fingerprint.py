@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Compute the server's `render_fingerprint` (layout `rf1`) at startup."""
 
+import math
+import time
 from argparse import Namespace
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,11 +25,13 @@ from vllm.renderers import BaseRenderer
 from vllm.renderers.chat_utils import load_chat_template
 from vllm.renderers.fingerprint import (
     CONFIG_FILES,
+    MAX_FINGERPRINT_LENGTH,
     PROCESSOR_FILES,
     TOKENIZER_FILES,
     build_manifest,
     collect_files,
     fingerprints_match,
+    is_well_formed,
     render_fingerprint,
     renderer_tag,
 )
@@ -271,6 +275,26 @@ def _error(status: HTTPStatus, err_type: str, message: str, **extra: str):
     return JSONResponse(content=content, status_code=status.value)
 
 
+_LOG_INTERVAL_S = 60.0
+_last_logged: dict[str, float] = {}
+
+
+def _log_accepted(reason: str, received: str, expected: str) -> None:
+    # Each caller can send a different value, so limit by time, not by value.
+    now = time.monotonic()
+    if now - _last_logged.get(reason, -math.inf) < _LOG_INTERVAL_S:
+        return
+    _last_logged[reason] = now
+    logger.warning(
+        "Render fingerprint %s accepted: received %s, expected %s. "
+        "Not logged again for %d s.",
+        reason,
+        received,
+        expected,
+        _LOG_INTERVAL_S,
+    )
+
+
 def check_render_fingerprint(raw_request: Request) -> JSONResponse | None:
     """Compare the caller's `X-Render-Fingerprint` with this server's.
 
@@ -298,18 +322,28 @@ def check_render_fingerprint(raw_request: Request) -> JSONResponse | None:
             expected=expected,
         )
 
+    # The value is client input: check it before it is compared, logged or
+    # returned.
+    if not is_well_formed(received):
+        _checks_counter().labels("invalid").inc()
+        return _error(
+            HTTPStatus.BAD_REQUEST,
+            "RenderFingerprintInvalid",
+            f"The {RENDER_FINGERPRINT_HEADER} header must be "
+            "`rf<n>:<sha256 hex>:<renderer tag>`, at most "
+            f"{MAX_FINGERPRINT_LENGTH} characters.",
+            expected=expected,
+        )
+
     if fingerprints_match(received, expected, args.fingerprint_compare):
         _checks_counter().labels("match").inc()
+        if received != expected:
+            _log_accepted("of another build", received, expected)
         return None
 
     _checks_counter().labels("mismatch").inc()
     if args.on_fingerprint_mismatch == "warn":
-        logger.warning_once(
-            "Render fingerprint mismatch accepted (--on-fingerprint-mismatch=warn): "
-            "received %s, expected %s",
-            received,
-            expected,
-        )
+        _log_accepted("mismatch", received, expected)
         return None
     return _error(
         HTTPStatus.CONFLICT,

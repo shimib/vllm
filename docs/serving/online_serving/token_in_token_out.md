@@ -68,14 +68,23 @@ IDs. A text prompt is rendered by the worker itself and is not checked.
 | Flag | Default | Effect |
 | ---- | ------- | ------ |
 | `--fingerprint-compare` | `full` | `full` compares the whole string, so only the same renderer build matches. `inputs` compares the manifest digest and the renderer name, which lets a `vllm-rs` renderer match a Python worker. |
-| `--on-fingerprint-mismatch` | `reject` | `reject` returns `409` with the `received` and `expected` strings. `warn` accepts the request, logs the pair once and counts it. |
+| `--on-fingerprint-mismatch` | `reject` | `reject` returns `409` with the `received` and `expected` strings. `warn` accepts the request and counts it. |
 | `--require-render-fingerprint` | off | Returns `400` for a request without the header. By default such a request is not checked. |
+
+A header value that is not shaped as `rf<n>:<sha256 hex>:<renderer tag>`, or
+is longer than 256 characters, returns `400` under every flag setting. The
+worker logs the `received` and `expected` strings of a request it accepts under
+`warn` or `inputs`, at most once a minute for each of the two.
 
 With the defaults, a rolling upgrade of either side is a mismatch, because
 the fingerprint carries the vLLM version. Use `--on-fingerprint-mismatch=warn`
 for the rollout window, or route by fingerprint. The
-`vllm:render_fingerprint_checks_total` counter reports `match`, `mismatch` and
-`absent` requests.
+`vllm:render_fingerprint_checks_total` counter reports `match`, `mismatch`,
+`absent` and `invalid` requests.
+
+A match means the two configurations agree. It does not authenticate the
+caller or the token IDs: the worker returns its fingerprint in a response
+header, so any client can send it.
 
 The worker also exports its own fingerprint as the `render_fingerprint` label
 of the `vllm:render_fingerprint_info` gauge, so a router can skip workers that

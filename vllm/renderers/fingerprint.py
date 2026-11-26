@@ -175,6 +175,19 @@ def render_fingerprint(manifest: Mapping[str, Any], tag: str) -> str:
     return f"rf{LAYOUT_VERSION}:{digest}:{tag}"
 
 
+MAX_FINGERPRINT_LENGTH = 256
+# The tag is printable ASCII without a space or a colon.
+_WELL_FORMED = re.compile(r"rf[1-9]\d{0,3}:[0-9a-f]{64}:[!-9;-~]+")
+
+
+def is_well_formed(fingerprint: str) -> bool:
+    """Whether a string is shaped as `rf<n>:<sha256 hex>:<renderer tag>`."""
+    return (
+        len(fingerprint) <= MAX_FINGERPRINT_LENGTH
+        and _WELL_FORMED.fullmatch(fingerprint) is not None
+    )
+
+
 def _split(fingerprint: str) -> tuple[str, str, str | None] | None:
     parts = fingerprint.split(":")
     if len(parts) != 3:

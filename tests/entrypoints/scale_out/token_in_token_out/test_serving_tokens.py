@@ -130,7 +130,8 @@ async def test_generate_checks_the_callers_render_fingerprint(client):
     header = "X-Render-Fingerprint"
 
     accepted = await client.post(GEN_ENDPOINT, json=payload, headers={header: own})
-    other_inputs = own.replace("rf1:", "rf1:00", 1)
+    layout, _, tag = own.split(":")
+    other_inputs = f"{layout}:{'0' * 64}:{tag}"
     rejected = await client.post(
         GEN_ENDPOINT, json=payload, headers={header: other_inputs}
     )
@@ -145,7 +146,8 @@ async def test_generate_checks_the_callers_render_fingerprint(client):
 async def test_completions_checks_the_fingerprint_only_for_token_prompts(client):
     """A token-array prompt was rendered elsewhere, so it is checked like
     `/inference/v1/generate`. A text prompt is rendered here and is not."""
-    headers = {"X-Render-Fingerprint": "rf1:00:other;renderer=hf;tokenizer=x/1"}
+    other = f"rf1:{'0' * 64}:other/1;renderer=hf;tokenizer=x/1"
+    headers = {"X-Render-Fingerprint": other}
     body = {"model": MODEL_NAME, "max_tokens": 2}
 
     tokens = await client.post(
