@@ -216,8 +216,10 @@ output: unspecified and `MM_PAYLOAD_TENSORS` include inline tensors;
 `MM_PAYLOAD_NONE` retains hashes and placeholder ranges only. JSON
 `mm_payload` and `return_mm_kwargs` do not select the gRPC output mode.
 
-The response includes prompt token IDs, the structured-output constraint,
-reasoning gate, and preprocessed media.
+`Render.Render` returns the `GenerateRequest` to send to `Inference.Generate`:
+prompt token IDs, the structured-output constraint, reasoning gate,
+preprocessed media, and the sampling and stopping settings of the body.
+`Render.RenderChat` returns the first four as separate fields.
 See [the renderer documentation](../docs/serving/online_serving/renderer.md#rust-raw-json-grpc-rendering)
 and [`render.proto`](proto/render.proto) for the contract.
 

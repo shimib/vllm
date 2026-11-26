@@ -61,15 +61,25 @@ data. Metadata-only mode is currently available on the Python HTTP render routes
 service rejects unknown enum values. The existing typed `Render.RenderChat` RPC keeps its
 `omit_media_kwargs` boolean unchanged.
 
-The response returns prompt token IDs, an effective structured-output
-constraint, a reasoning gate, and preprocessed media. **It does not yet return
-lowered sampling or stopping parameters**, including temperature, max_tokens,
-stop, bad_words, or n. To preserve the request's generation behavior, supply
-equivalent generation parameters separately when constructing the
-`Inference.Generate` request. Copying only the render response is insufficient;
-for example, a temperature and multiple samples requested in JSON would not be
-preserved by those fields alone. This remaining contract work is tracked in
-[#65503](https://github.com/vllm-project/vllm/issues/65503).
+The response returns `generate_request`, the `GenerateRequest` to send to
+`Inference.Generate`. It holds the prompt token IDs, the effective
+structured-output constraint, the reasoning gate, the preprocessed media, and
+the generation settings of the JSON body:
+
+- The caller sets `request_id` and the output selection
+  (`response.output_text`, `response.output_token_ids`).
+- A setting the body omits stays unset, and the worker resolves it from its
+  model defaults.
+- `lora_name` is the LoRA adapter that the body's `model` names, and `model` is
+  left empty.
+- `bad_words` are returned as `decoding.bad_words_token_ids`.
+- `stopping.stop_strings` needs `response.output_text` left on, so that the
+  worker matches the stop strings.
+- `sampling.num_sequences` carries `n`. `Inference.Generate` rejects a value
+  above 1.
+- A body that sets a value with no `GenerateRequest` field, such as
+  `repetition_detection` or a custom `vllm_xargs` key, fails with
+  `INVALID_ARGUMENT`.
 
 ## Get Responses prompt token IDs
 

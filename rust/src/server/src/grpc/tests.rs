@@ -3709,11 +3709,23 @@ async fn render_chat_rejects_tools_when_tool_parsing_is_disabled() {
 async fn render_raw<S: crate::render::RenderContext>(
     service: &RenderServiceImpl<S>,
     request: pb::RenderRequest,
-) -> Result<pb::RenderResponse, tonic::Status> {
-    service
-        .render(tonic::Request::new(request))
-        .await
-        .map(tonic::Response::into_inner)
+) -> Result<pb::GenerateRequest, tonic::Status> {
+    let response = service.render(tonic::Request::new(request)).await?.into_inner();
+    Ok(response.generate_request.expect("generate_request"))
+}
+
+fn prompt_token_ids(request: &pb::GenerateRequest) -> Vec<u32> {
+    let Some(pb::generate_request::Prompt::TokenIds(token_ids)) = &request.prompt else {
+        panic!("expected token_ids: {:?}", request.prompt);
+    };
+    token_ids.ids.clone()
+}
+
+fn structured_output(request: &pb::GenerateRequest) -> Option<pb::StructuredOutput> {
+    request
+        .decoding
+        .as_ref()
+        .and_then(|decoding| decoding.structured_output.clone())
 }
 
 #[tokio::test]
@@ -3731,10 +3743,10 @@ async fn render_raw_chat_returns_rendered_prompt_token_ids_and_reasoning_gate() 
     let rendered = render_raw(&render_service(), request).await.expect("render raw chat");
 
     assert_eq!(
-        rendered.prompt_token_ids,
+        prompt_token_ids(&rendered),
         render_token_ids("user: Weather in Paris?\nassistant:")
     );
-    assert_eq!(rendered.structured_output, None);
+    assert_eq!(structured_output(&rendered), None);
     let gate = rendered.engine_reasoning_gate.expect("engine_reasoning_gate");
     assert_eq!(
         gate.chat_template_kwargs,
@@ -3791,12 +3803,12 @@ async fn render_raw_chat_parity_with_http_render_route() {
             .iter()
             .map(|id| id.as_u64().expect("token id u64") as u32)
             .collect();
-        assert_eq!(raw.prompt_token_ids, http_token_ids);
-        let structured_output: Option<StructuredOutputsParams> =
+        assert_eq!(prompt_token_ids(&raw), http_token_ids);
+        let http_structured_output: Option<StructuredOutputsParams> =
             serde_json::from_value(http["sampling_params"]["structured_outputs"].clone()).unwrap();
         assert_eq!(
-            raw.structured_output,
-            structured_output.as_ref().map(super::convert::structured_output_to_proto)
+            structured_output(&raw),
+            http_structured_output.as_ref().map(super::convert::structured_output_to_proto)
         );
         let gate = raw.engine_reasoning_gate.expect("reasoning gate");
         assert_eq!(gate.reasoning_ended, http["reasoning_ended"].as_bool());
@@ -3955,9 +3967,155 @@ async fn render_raw_chat_accepts_lora_adapter_model() {
     let rendered = render_raw(&service, request).await.expect("render raw chat lora");
 
     assert_eq!(
-        rendered.prompt_token_ids,
+        prompt_token_ids(&rendered),
         render_token_ids("user: Weather in Paris?\nassistant:")
     );
+    assert_eq!(rendered.lora_name, "adapter-a");
+    assert_eq!(rendered.model, "");
+}
+
+/// The returned `GenerateRequest` gives the engine the sampling params of the
+/// chat route, and the worker its decode options.
+#[tokio::test]
+async fn render_raw_chat_returns_generation_settings_of_the_chat_route() {
+    let state = Arc::new(render_state());
+    let body = serde_json::json!({
+        "model": "render-model",
+        "messages": [{"role": "user", "content": "Weather in Paris?"}],
+        "n": 2,
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "top_k": 40,
+        "min_p": 0.05,
+        "seed": 7,
+        "max_completion_tokens": 64,
+        "min_tokens": 2,
+        "presence_penalty": 0.5,
+        "frequency_penalty": 0.25,
+        "repetition_penalty": 1.1,
+        "logit_bias": {"3": 1.5},
+        "allowed_token_ids": [1, 2, 3],
+        "bad_words": ["Paris"],
+        "stop": ["END"],
+        "include_stop_str_in_output": true,
+        "stop_token_ids": [5],
+        "ignore_eos": true,
+        "skip_special_tokens": false,
+        "thinking_token_budget": 16,
+        "logprobs": true,
+        "top_logprobs": 3,
+        "watermarking": false,
+        "priority": 2,
+        "cache_salt": "tenant-a",
+        "session_id": "session-a",
+        "kv_transfer_params": {"do_remote_decode": true}
+    });
+    let body = serde_json::to_vec(&body).unwrap();
+
+    let chat_request = crate::routes::render::lower_chat_render_request(
+        state.as_ref(),
+        serde_json::from_slice(&body).unwrap(),
+        &axum::http::HeaderMap::new(),
+    )
+    .await
+    .expect("lower chat request")
+    .chat_request;
+    let text_request = (state.chat)
+        .prepare(chat_request, std::num::NonZeroU32::MIN, &state.text)
+        .await
+        .expect("prepare chat request")
+        .text_request;
+    let expected = state.text.prepare(text_request).expect("prepare text request");
+
+    let mut generate_request = render_raw(
+        &RenderServiceImpl::new(state.clone()),
+        pb::RenderRequest {
+            api: pb::Api::Chat as i32,
+            body,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("render raw chat");
+    let sampling = generate_request.sampling.as_mut().expect("sampling");
+    assert_eq!(sampling.num_sequences, 2);
+    // Inference.Generate does not fan out `n` yet.
+    sampling.num_sequences = 0;
+    let text_request =
+        super::convert::to_text_request(generate_request, false, &state.served_model_names)
+            .expect("generate request");
+    let actual = state.text.prepare(text_request).expect("prepare generate request");
+
+    assert_eq!(
+        actual.generate_request.sampling_params,
+        expected.generate_request.sampling_params
+    );
+    assert_eq!(
+        actual.text_request.decode_options,
+        expected.text_request.decode_options
+    );
+    assert_eq!(actual.generate_request.priority, 2);
+    assert_eq!(
+        actual.generate_request.cache_salt.as_deref(),
+        Some("tenant-a")
+    );
+    assert_eq!(
+        actual.generate_request.session_id.as_deref(),
+        Some("session-a")
+    );
+}
+
+/// The worker resolves a setting the body omits from its model defaults.
+#[tokio::test]
+async fn render_raw_chat_leaves_omitted_generation_settings_unset() {
+    let body = serde_json::json!({
+        "model": "render-model",
+        "messages": [{"role": "user", "content": "Weather in Paris?"}]
+    });
+    let request = pb::RenderRequest {
+        api: pb::Api::Chat as i32,
+        body: serde_json::to_vec(&body).unwrap(),
+        ..Default::default()
+    };
+    let rendered = render_raw(&render_service(), request).await.expect("render raw chat");
+
+    assert_eq!(
+        rendered,
+        pb::GenerateRequest {
+            prompt: Some(pb::generate_request::Prompt::TokenIds(pb::TokenIds {
+                ids: render_token_ids("user: Weather in Paris?\nassistant:"),
+            })),
+            ..Default::default()
+        }
+    );
+}
+
+/// A setting that `GenerateRequest` cannot carry fails instead of being
+/// dropped.
+#[tokio::test]
+async fn render_raw_chat_rejects_settings_without_a_generate_request_field() {
+    for (field, value) in [
+        (
+            "repetition_detection",
+            serde_json::json!({"max_pattern_size": 4, "min_count": 2}),
+        ),
+        ("vllm_xargs", serde_json::json!({"custom": 1})),
+    ] {
+        let mut body = serde_json::json!({
+            "model": "render-model",
+            "messages": [{"role": "user", "content": "Weather in Paris?"}]
+        });
+        body[field] = value;
+        let request = pb::RenderRequest {
+            api: pb::Api::Chat as i32,
+            body: serde_json::to_vec(&body).unwrap(),
+            ..Default::default()
+        };
+        let status = render_raw(&render_service(), request).await.expect_err(field);
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status:?}");
+        assert!(status.message().contains(field), "{status:?}");
+    }
 }
 
 #[tokio::test]
@@ -3984,11 +4142,11 @@ async fn render_raw_chat_returns_parser_grammar_for_required_tool_choice() {
 
     let Some(pb::StructuredOutput {
         kind: Some(pb::structured_output::Kind::StructuralTag(structural_tag)),
-    }) = rendered.structured_output
+    }) = structured_output(&rendered)
     else {
         panic!(
             "expected a structural tag: {:?}",
-            rendered.structured_output
+            structured_output(&rendered)
         );
     };
     assert!(structural_tag.contains("get_weather"), "{structural_tag}");
@@ -4033,7 +4191,7 @@ async fn render_raw_chat_uses_proto_mm_payload_only() {
         assert_eq!(features.kwargs.is_some(), includes_kwargs, "{mode:?}");
         assert!(features.mm_hash.is_some());
         let identity = (
-            rendered.prompt_token_ids.clone(),
+            prompt_token_ids(&rendered),
             features.mm_hash.clone(),
             features.offset,
             features.length,

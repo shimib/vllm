@@ -118,24 +118,39 @@ async fn render(
     // and error on both protocols.
     let Json(body) = Json::<ChatCompletionRequest>::from_bytes(&request.body)
         .map_err(|rejection| api_error_to_status(rejection.into()))?;
+    let n = body.n;
 
-    let LoweredChatRender { chat_request, .. } =
-        lower_chat_render_request(state, body, &HeaderMap::new())
-            .await
-            .map_err(api_error_to_status)?;
+    let LoweredChatRender {
+        chat_request,
+        lora_name,
+        ..
+    } = lower_chat_render_request(state, body, &HeaderMap::new())
+        .await
+        .map_err(api_error_to_status)?;
 
     let RenderedChat {
         prompt_token_ids,
-        structured_output,
+        // Carried in `generation.decoding`.
+        structured_output: _,
         engine_reasoning_gate,
         media,
+        generation,
     } = prepare_and_render_chat(state, chat_request, None, omit_media_kwargs).await?;
+    let mut generate_request = pb::GenerateRequest {
+        prompt: Some(pb::generate_request::Prompt::TokenIds(pb::TokenIds {
+            ids: prompt_token_ids,
+        })),
+        engine_reasoning_gate,
+        media,
+        lora_name: lora_name.unwrap_or_default(),
+        ..generation
+    };
+    if let Some(n) = n {
+        generate_request.sampling.get_or_insert_default().num_sequences = n;
+    }
 
     Ok(pb::RenderResponse {
-        prompt_token_ids,
-        structured_output,
-        engine_reasoning_gate,
-        media,
+        generate_request: Some(generate_request),
     })
 }
 
@@ -153,6 +168,7 @@ async fn render_chat(
         structured_output,
         engine_reasoning_gate,
         media,
+        generation: _,
     } = prepare_and_render_chat(
         state,
         chat_request,
@@ -174,6 +190,9 @@ struct RenderedChat {
     structured_output: Option<pb::StructuredOutput>,
     engine_reasoning_gate: Option<pb::EngineReasoningGate>,
     media: Vec<pb::MediaItem>,
+    /// The request's generation settings, in the `GenerateRequest` fields that
+    /// carry them.
+    generation: pb::GenerateRequest,
 }
 
 async fn prepare_and_render_chat(
@@ -196,7 +215,7 @@ async fn prepare_and_render_chat(
             "token_ids must contain at least one token ID.",
         ));
     }
-    let text_request = prepared.text_request;
+    let mut text_request = prepared.text_request;
     let media: Vec<pb::MediaItem> = (prepared.generate_request.mm_features.into_iter().flatten())
         .map(|feature| media::feature_to_proto(feature, !omit_media_kwargs))
         .try_collect()?;
@@ -214,7 +233,7 @@ async fn prepare_and_render_chat(
 
     // A parser-built output grammar replaces the request's constraint. Echo an
     // unchanged constraint as sent, so a JSON schema keeps its exact text.
-    let structured_output = match text_request.sampling_params.structured_outputs {
+    let structured_output = match text_request.sampling_params.structured_outputs.take() {
         Some(params) if Some(&params) != structured_outputs.as_ref() => {
             Some(convert::structured_output_to_proto(&params))
         }
@@ -233,12 +252,24 @@ async fn prepare_and_render_chat(
             chat_template_kwargs.into_iter().collect(),
         )),
     });
+    let generation = pb::GenerateRequest {
+        priority: text_request.priority,
+        session_id: text_request.session_id,
+        ..convert::generation_to_proto(
+            text_request.sampling_params,
+            text_request.decode_options,
+            text_request.cache_salt,
+            prepared.generate_request.sampling_params.bad_words_token_ids,
+            structured_output.clone(),
+        )?
+    };
 
     Ok(RenderedChat {
         prompt_token_ids: prepared.generate_request.prompt_token_ids,
         structured_output,
         engine_reasoning_gate,
         media,
+        generation,
     })
 }
 

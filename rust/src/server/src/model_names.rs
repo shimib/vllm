@@ -65,6 +65,11 @@ impl ServedModelNames {
         }
     }
 
+    /// Whether `model` names a loaded LoRA adapter.
+    pub fn is_adapter(&self, model: &str) -> bool {
+        self.adapter_names.iter().any(|name| name == model)
+    }
+
     /// Reject a model name this server does not serve with a 404 that lists
     /// the base model names, like Python.
     pub fn check(&self, model: Option<&str>) -> Result<(), ApiError> {

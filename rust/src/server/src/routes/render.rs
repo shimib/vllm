@@ -167,6 +167,8 @@ fn hoist_transfer_params(
 pub(crate) struct LoweredChatRender {
     pub(crate) chat_request: ChatRequest,
     pub(crate) model: String,
+    /// The LoRA adapter that `model` names.
+    pub(crate) lora_name: Option<String>,
 }
 
 pub(crate) async fn lower_chat_render_request<S: RenderContext>(
@@ -177,6 +179,7 @@ pub(crate) async fn lower_chat_render_request<S: RenderContext>(
     let requested_model = body.model.as_deref().filter(|model| !model.is_empty());
     let lora_resolution = state.resolve_model(requested_model).await;
     let model = requested_model.unwrap_or(lora_resolution.model_names.primary()).to_string();
+    let lora_name = lora_resolution.model_names.is_adapter(&model).then(|| model.clone());
 
     let request_context = resolve_request_context(headers, body.request_id.as_deref())?;
 
@@ -190,6 +193,7 @@ pub(crate) async fn lower_chat_render_request<S: RenderContext>(
     Ok(LoweredChatRender {
         chat_request,
         model,
+        lora_name,
     })
 }
 
@@ -212,6 +216,7 @@ pub(crate) async fn render_chat<S: RenderContext>(
     let LoweredChatRender {
         chat_request,
         model,
+        ..
     } = lower_chat_render_request(state.as_ref(), body, &headers).await?;
     let text_request = state
         .chat_processor()

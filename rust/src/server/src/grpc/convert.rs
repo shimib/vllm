@@ -345,6 +345,169 @@ pub(super) fn structured_output_to_proto(params: &StructuredOutputsParams) -> pb
     pb::StructuredOutput { kind: Some(kind) }
 }
 
+/// The inverse of [`to_text_request`] for the generation settings: a
+/// `GenerateRequest` with the returned fields lowers to the same sampling
+/// params and decode options. `bad_words_token_ids` holds the bad words
+/// already tokenized. A setting with no `GenerateRequest` field is rejected.
+pub(super) fn generation_to_proto(
+    sampling_params: SamplingParams,
+    decode_options: TextDecodeOptions,
+    cache_salt: Option<String>,
+    bad_words_token_ids: Option<Vec<Vec<u32>>>,
+    structured_output: Option<pb::StructuredOutput>,
+) -> Result<pb::GenerateRequest, Status> {
+    let SamplingParams {
+        temperature,
+        watermarking,
+        top_p,
+        top_k,
+        seed,
+        max_tokens,
+        min_tokens,
+        thinking_token_budget,
+        logprobs,
+        prompt_logprobs,
+        prompt_logprob_token_ids,
+        prompt_logprob_start,
+        min_p,
+        frequency_penalty,
+        presence_penalty,
+        repetition_penalty,
+        repetition_detection,
+        stop_token_ids,
+        ignore_eos,
+        logit_bias,
+        allowed_token_ids,
+        bad_words: _,
+        bad_words_token_ids: _,
+        logprob_token_ids,
+        structured_outputs: _,
+        skip_reading_prefix_cache,
+        routed_experts_prompt_start,
+        vllm_xargs,
+        stream_interval,
+    } = sampling_params;
+    let logprob_token_ids = logprob_token_ids.filter(|ids| !ids.is_empty());
+
+    let mut kv_transfer_params = None;
+    let mut ec_transfer_params = None;
+    let mut unsupported = [
+        ("repetition_detection", repetition_detection.is_some()),
+        (
+            "routed_experts_prompt_start",
+            routed_experts_prompt_start.is_some(),
+        ),
+        ("stream_interval", stream_interval.is_some()),
+        (
+            "prompt_logprob_token_ids",
+            prompt_logprob_token_ids.is_some(),
+        ),
+        ("prompt_logprob_start", prompt_logprob_start.is_some()),
+        (
+            "logprobs with logprob_token_ids",
+            logprobs.is_some() && logprob_token_ids.is_some(),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, set)| *set)
+    .map(|(name, _)| name.to_owned())
+    .collect::<Vec<_>>();
+    for (key, value) in vllm_xargs.into_iter().flatten() {
+        let params = match key.as_str() {
+            "kv_transfer_params" => &mut kv_transfer_params,
+            "ec_transfer_params" => &mut ec_transfer_params,
+            _ => {
+                unsupported.push(format!("vllm_xargs.{key}"));
+                continue;
+            }
+        };
+        *params = Some(
+            json_to_proto_struct(&value)
+                .ok_or_else(|| Status::invalid_argument(format!("{key} must be an object")))?,
+        );
+    }
+    if !unsupported.is_empty() {
+        unsupported.sort();
+        return Err(Status::invalid_argument(format!(
+            "Inference.Generate does not support: {}",
+            unsupported.join(", ")
+        )));
+    }
+
+    let sampling = pb::RandomSampling {
+        num_sequences: 0,
+        top_k,
+        top_p,
+        min_p,
+        seed,
+    };
+    let decoding = pb::DecodingParameters {
+        presence_penalty: presence_penalty.unwrap_or_default(),
+        frequency_penalty: frequency_penalty.unwrap_or_default(),
+        repetition_penalty: repetition_penalty.unwrap_or_default(),
+        logit_bias: logit_bias.unwrap_or_default(),
+        allowed_token_ids: allowed_token_ids.unwrap_or_default(),
+        legacy_structured_output: None,
+        bad_words_token_ids: (bad_words_token_ids.into_iter().flatten())
+            .map(|ids| pb::TokenIds { ids })
+            .collect(),
+        structured_output,
+    };
+    let stopping = pb::StoppingCriteria {
+        max_new_tokens: max_tokens.unwrap_or_default(),
+        min_new_tokens: min_tokens.unwrap_or_default(),
+        stop_token_ids: stop_token_ids.unwrap_or_default(),
+        stop_strings: decode_options.stop_strings.unwrap_or_default(),
+        include_stop_strings: decode_options.include_stop_str_in_output,
+        ignore_eos,
+        thinking_token_budget,
+    };
+    let response = pb::ResponseOptions {
+        prompt_logprobs: prompt_logprobs.is_some(),
+        prompt_candidates: prompt_logprobs.and_then(|count| candidates_to_proto(count, None)),
+        output_text: (!decode_options.detokenize).then_some(false),
+        output_logprobs: logprobs.is_some() || logprob_token_ids.is_some(),
+        output_candidates: candidates_to_proto(logprobs.unwrap_or(0), logprob_token_ids),
+        skip_special_tokens: decode_options.skip_special_tokens,
+        ..Default::default()
+    };
+    let kv = pb::KvCacheParameters {
+        bypass_prefix_cache: skip_reading_prefix_cache == Some(true),
+        cache_salt: cache_salt.unwrap_or_default(),
+        kv_transfer_params,
+        ec_transfer_params,
+    };
+
+    fn set<T: Default + PartialEq>(message: T) -> Option<T> {
+        (message != T::default()).then_some(message)
+    }
+    Ok(pb::GenerateRequest {
+        temperature,
+        sampling: set(sampling),
+        decoding: set(decoding),
+        stopping: set(stopping),
+        response: set(response),
+        kv: set(kv),
+        watermarking,
+        ..Default::default()
+    })
+}
+
+/// The inverse of [`candidate_logprob_spec`].
+fn candidates_to_proto(count: i32, token_ids: Option<Vec<u32>>) -> Option<pb::CandidateTokens> {
+    use pb::candidate_tokens::Select;
+
+    let select = match (token_ids, count) {
+        (Some(ids), _) => Select::TokenIds(pb::TokenIds { ids }),
+        (None, -1) => Select::All(true),
+        (None, 0) => return None,
+        (None, count) => Select::TopN(count as u32),
+    };
+    Some(pb::CandidateTokens {
+        select: Some(select),
+    })
+}
+
 // ========================================================================================
 // Response conversion
 // ========================================================================================

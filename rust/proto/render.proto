@@ -10,9 +10,8 @@ import "inference.proto";
 
 // Engine-free prompt rendering, the gRPC counterpart of the HTTP render API.
 //
-// A client renders a request with Render or RenderChat, builds its own
-// GenerateRequest from the response fields, and runs it with
-// Inference.Generate.
+// A client renders a request and runs it with Inference.Generate: Render
+// returns the GenerateRequest, and RenderChat the fields to build one from.
 service Render {
   // Renders a chat request into prompt token IDs plus the generation settings
   // that rendering decides.
@@ -60,27 +59,33 @@ message RenderRequest {
 }
 
 // Output of engine-free rendering.
-//
-// Copy these fields into the GenerateRequest sent to Inference.Generate.
-// Sampling and stopping values (including temperature, max_tokens, stop,
-// bad_words, and n) are not returned yet. The caller must supply the equivalent
-// generation parameters separately; copying only these fields is insufficient.
-// Tracked in https://github.com/vllm-project/vllm/issues/65503.
 message RenderResponse {
-  // The rendered prompt, already truncated. Send as `token_ids`.
-  repeated uint32 prompt_token_ids = 1;
-  // The effective structured-output constraint: the request's
-  // `structured_output`, or the output grammar the tool-call parser built
-  // around it. Unset means unconstrained. Send as `decoding.structured_output`.
-  StructuredOutput structured_output = 2;
-  // Send as `engine_reasoning_gate`.
-  EngineReasoningGate engine_reasoning_gate = 3;
-  // Preprocessed media items, ordered by their placeholder ranges in
-  // `prompt_token_ids`. Send as `media`. Their inline kwargs total at most
-  // 16 MiB, the most Inference.Generate accepts; larger media fail with
-  // RESOURCE_EXHAUSTED. Such responses exceed the 4 MiB default receive limit
-  // of many gRPC clients.
-  repeated MediaItem media = 4;
+  reserved 1 to 4;
+
+  // The request to send to Inference.Generate.
+  //
+  // - `token_ids` is the rendered prompt, already truncated.
+  // - `decoding.structured_output` is the effective structured-output
+  //   constraint: the body's, or the output grammar the tool-call parser built
+  //   around it.
+  // - `media` holds the preprocessed media items, ordered by their placeholder
+  //   ranges in `token_ids`. Their inline kwargs total at most 16 MiB, the
+  //   most Inference.Generate accepts; larger media fail with
+  //   RESOURCE_EXHAUSTED. Such responses exceed the 4 MiB default receive
+  //   limit of many gRPC clients.
+  // - The generation settings are those of the body, lowered as the HTTP
+  //   route of the API lowers them, with `bad_words` as
+  //   `decoding.bad_words_token_ids` and `n` as `sampling.num_sequences`. A
+  //   setting the body omits stays unset, so Inference.Generate resolves it
+  //   from the model defaults. A body that sets a value with no
+  //   GenerateRequest field fails with INVALID_ARGUMENT.
+  // - `lora_name` is the LoRA adapter that the body's `model` names. `model`
+  //   is left empty, which selects the base model.
+  //
+  // The caller sets `request_id` and the output selection
+  // (`response.output_text`, `response.output_token_ids`); `output_text` must
+  // stay on when `stopping.stop_strings` is set.
+  GenerateRequest generate_request = 6;
 }
 
 message RenderChatRequest {
